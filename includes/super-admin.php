@@ -61,17 +61,6 @@ function requireModuleOnline(array $data, string $module): void
     }
 }
 
-// Maps staff request types to their maintenance modules before approval or submission.
-function checkRequestMaintenance(array $data, string $type): void
-{
-    $module = match ($type) {
-        'sale' => 'pos',
-        'product_add', 'product_edit' => 'inventory',
-        default => 'system',
-    };
-    requireModuleOnline($data, $module);
-}
-
 // Checks which areas a proposed snapshot changes so paused modules remain protected during saves.
 function checkShopMaintenance(array $data, array $next): void
 {

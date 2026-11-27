@@ -133,7 +133,8 @@ function customerPortal(array $data, string $username, bool $includePetPhotos = 
             array_values(array_filter($shop['records']['Pets'] ?? [], static fn(array $row): bool => $owner !== null && $row[1] === $owner))),
         'bookings' => $bookings,
         'bookingNotices' => customerBookingNotices($bookings, $now, $data['customerAccounts'][strtolower($username)]['readBookingNotices'] ?? []),
-        'orders' => array_values(array_filter($data['customerOrders'], static fn(array $row): bool => $row['username'] === $username)),
+        'orders' => array_map('displayPickupOrder', array_values(array_filter($data['customerOrders'],
+            static fn(array $row): bool => $row['username'] === $username))),
     ];
 }
 
@@ -266,6 +267,13 @@ function bookCustomerAppointment(array &$data, string $username): string
     return 'Appointment request sent for approval. Reference ' . $id . '.';
 }
 
+// Existing open orders predate staff acceptance and enter the same queue as new reservations.
+function displayPickupOrder(array $order): array
+{
+    if ($order['status'] === 'Awaiting pickup') $order['status'] = 'Pending acceptance';
+    return $order;
+}
+
 // Reserves stock using the selected variant IDs and current prices. The checkout ID protects against duplicate submissions.
 function placeCustomerOrder(array &$data, string $username): string
 {
@@ -276,7 +284,9 @@ function placeCustomerOrder(array &$data, string $username): string
         authResponse(422, 'Add products to your cart before checking out.');
     }
     foreach ($data['customerOrders'] as $order) {
-        if ($order['username'] === $username && ($order['checkout'] ?? '') === $checkout) return 'Order reserved. Reference ' . $order['id'] . '.';
+        if ($order['username'] === $username && ($order['checkout'] ?? '') === $checkout) {
+            return 'Reservation ' . $order['id'] . ' · ' . displayPickupOrder($order)['status'] . '.';
+        }
     }
     $items = [];
     $seen = [];
@@ -303,9 +313,9 @@ function placeCustomerOrder(array &$data, string $username): string
     $customer = customerIdentity($data, $username);
     $id = 'ORD-' . strtoupper(bin2hex(random_bytes(5)));
     $data['customerOrders'][] = ['id' => $id, 'username' => $username, 'customer' => $customer[0], 'customerId' => $customer[8],
-        'items' => $items, 'total' => $total / 100, 'status' => 'Awaiting pickup', 'created' => gmdate('c'), 'checkout' => $checkout];
+        'items' => $items, 'total' => $total / 100, 'status' => 'Pending acceptance', 'created' => gmdate('c'), 'checkout' => $checkout];
     $data['revision']++;
-    return 'Order reserved. Reference ' . $id . '. Pay when you pick it up.';
+    return 'Reservation sent for staff acceptance. Reference ' . $id . '.';
 }
 
 // Dispatches customer, staff and admin actions according to role, then returns the relevant portal or dashboard data.
@@ -364,8 +374,9 @@ function handleCustomerPortal(string $action): never
             $includePetPhotos = $action === 'customer_register_pet' || ($_POST['includePetPhotos'] ?? '') === 'true';
             return ['notice' => $message, 'portal' => customerPortal($data, $account['username'], $includePetPhotos)];
         }
-        if ($action === 'customer_booking_status') return ['notice' => $message] + shopResult($data, false, $account['username']);
-        if ($account['role'] === 'staff') return ['notice' => $message, 'orders' => array_reverse($data['customerOrders'])];
+        if ($action === 'customer_booking_status') return ['notice' => $message] + shopResult($data, false);
+        if ($account['role'] === 'staff') return ['notice' => $message,
+            'orders' => array_map('displayPickupOrder', array_reverse($data['customerOrders']))];
         $accounts = array_map(static fn(array $row): array => [
             'username' => $row['username'], 'name' => $row['name'], 'email' => $row['email'], 'created' => $row['created'],
         ], array_values($data['customerAccounts']));
@@ -374,14 +385,23 @@ function handleCustomerPortal(string $action): never
     authResponse(200, '', $result);
 }
 
-// Completes a pickup by recording the sale or cancels it by restoring its reserved stock.
+// Advances a reservation, records a completed sale, or releases stock on cancellation.
 function resolveCustomerOrder(array &$data): string
 {
     $id = $_POST['id'] ?? '';
     $status = $_POST['status'] ?? '';
-    if (!in_array($status, ['Completed', 'Cancelled'], true)) authResponse(422, 'Choose a valid order status.');
+    if (!in_array($status, ['Accepted', 'Completed', 'Cancelled'], true)) authResponse(422, 'Choose a valid order status.');
     $index = array_search($id, array_column($data['customerOrders'], 'id'), true);
-    if ($index === false || $data['customerOrders'][$index]['status'] !== 'Awaiting pickup') {
+    $current = $index === false ? null : displayPickupOrder($data['customerOrders'][$index])['status'];
+    $allowed = match ($current) {
+        'Pending acceptance' => ['Accepted', 'Cancelled'],
+        'Accepted' => ['Completed', 'Cancelled'],
+        default => [],
+    };
+    if (!in_array($status, $allowed, true)) {
+        if ($current === 'Pending acceptance' && $status === 'Completed') {
+            authResponse(409, 'Accept this reservation before completing pickup.');
+        }
         authResponse(409, 'This order has already been updated or no longer exists.');
     }
     $order = &$data['customerOrders'][$index];
@@ -392,7 +412,7 @@ function resolveCustomerOrder(array &$data): string
             if ($product === false) authResponse(409, 'A product is missing. Restore it before cancelling this order.');
             $products[$product][3] += $line['quantity'];
         }
-    } else {
+    } elseif ($status === 'Completed') {
         $records = &$data['shop']['records'];
         $date = manilaNow()->format('Y-m-d');
         $name = $order['customer'];

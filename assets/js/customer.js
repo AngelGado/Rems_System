@@ -88,19 +88,23 @@ function productImage(product) {
     return frame;
 }
 
-// Updates the quantity for a specific variant ID, respects its available stock and clears the old checkout token.
+// Applies a step change while respecting available stock.
 function adjustCart(id, delta) {
     const quantity = (cart.get(id) ?? 0) + delta;
     const product = data.products.find(item => item.id === id);
     if (delta > 0 && (!product || quantity > product.stock)) return;
-    checkoutId = '';
-    if (quantity <= 0) cart.delete(id);
-    else cart.set(id, quantity);
+    setCartQuantity(id, quantity);
     renderShop();
 }
 
-// Renders searchable variant groups and recalculates the pickup cart totals and checkout availability.
-function renderShop() {
+function setCartQuantity(id, quantity) {
+    if (cart.get(id) === quantity) return;
+    checkoutId = '';
+    if (quantity <= 0) cart.delete(id);
+    else cart.set(id, quantity);
+}
+
+function renderShopCatalog() {
     const query = getPortal('#portal-search').value.toLowerCase().trim();
     const list = getPortal('#portal-products');
     const variants = data.products.map(item => ({ ...item, name: item.productName ?? item.name, label: item.name }));
@@ -118,15 +122,16 @@ function renderShop() {
             addVariant: id => adjustCart(id, 1)
         }));
     }
+}
+
+function renderShop() {
+    renderShopCatalog();
     const lines = getPortal('#portal-cart-lines');
     lines.replaceChildren();
-    let total = 0;
-    let invalid = false;
     for (const [id, quantity] of cart) {
         const product = data.products.find(item => item.id === id);
+        const stock = product?.stock ?? 0;
         const row = element('div', 'portal-cart-line');
-        if (!product || quantity > product.stock) invalid = true;
-        total += priceCents(product?.price ?? 0) * quantity;
         const name = element('strong', '', product?.name ?? 'Unavailable product');
         const controls = element('div', 'quantity-buttons');
         const less = portalButton('−', () => adjustCart(id, -1), '');
@@ -134,13 +139,53 @@ function renderShop() {
         less.setAttribute('aria-label', 'Remove one ' + name.textContent);
         more.setAttribute('aria-label', 'Add one ' + name.textContent);
         less.disabled = saving;
-        more.disabled = saving || quantity >= (product?.stock ?? 0);
-        controls.append(less, element('span', '', quantity), more);
+        more.disabled = saving || quantity >= stock;
+        const input = element('input', 'cart-quantity');
+        input.type = 'number';
+        input.inputMode = 'numeric';
+        input.min = '1';
+        input.max = String(stock);
+        input.step = '1';
+        input.required = true;
+        input.value = String(quantity);
+        input.disabled = saving;
+        input.setAttribute('aria-label', 'Quantity for ' + name.textContent);
+        const warning = element('p', 'stock-warning');
+        warning.setAttribute('aria-live', 'polite');
+        const updateWarning = () => {
+            warning.textContent = stock > 0 ? 'Enter a whole number from 1 to ' + stock + '.' : 'This product is out of stock.';
+            warning.hidden = input.validity.valid;
+        };
+        input.addEventListener('input', () => {
+            if (input.validity.valid && Number.isSafeInteger(input.valueAsNumber)) {
+                setCartQuantity(id, input.valueAsNumber);
+                more.disabled = input.valueAsNumber >= stock;
+                renderShopCatalog();
+            }
+            updateWarning();
+            updateCartSummary();
+        });
+        input.addEventListener('keydown', event => {
+            if (event.key === 'Enter' && input.validity.valid) input.blur();
+        });
+        updateWarning();
+        controls.append(less, input, more);
         row.append(name, controls);
-        if (!product || quantity > product.stock) row.append(element('p', 'stock-warning', 'Reduce this quantity to continue.'));
+        row.append(warning);
         lines.append(row);
     }
     if (!cart.size) lines.append(element('p', 'portal-help', 'Your cart is empty.'));
+    updateCartSummary();
+}
+
+function updateCartSummary() {
+    let total = 0;
+    let invalid = Boolean(getPortal('#portal-cart-lines').querySelector('input:invalid'));
+    for (const [id, quantity] of cart) {
+        const product = data.products.find(item => item.id === id);
+        if (!product || quantity > product.stock) invalid = true;
+        total += priceCents(product?.price ?? 0) * quantity;
+    }
     getPortal('#portal-cart-count').textContent = cart.size ? '(' + [...cart.values()].reduce((a, b) => a + b, 0) + ')' : '';
     getPortal('#portal-cart-total').textContent = formatMoney(total / 100);
     const pickupPaused = data.pausedModules.includes('pickup');
@@ -229,7 +274,8 @@ function viewOrderReceipt(order) {
         ...items,
         '',
         'Order total ' + formatMoney(order.total),
-        ...(order.status === 'Awaiting pickup' ? ['Pay when you pick up your order.'] : []),
+        ...(order.status === 'Pending acceptance' ? ['Waiting for staff to accept your reservation.'] : []),
+        ...(order.status === 'Accepted' ? ['Pay when you pick up your order.'] : []),
     ].join('\n');
     getPortal('#portal-receipt-details').textContent = details;
     getPortal('#portal-print-details').textContent = details;
@@ -380,10 +426,13 @@ function renderPortal() {
 
 // Fetches current portal data without overlapping an active refresh or save. Pet photos are requested on relevant tabs.
 async function refreshPortal() {
-    if (loading || saving || markingNotifications) return;
+    const editingQuantity = () => document.activeElement?.matches('#portal-cart-lines .cart-quantity');
+    if (loading || saving || markingNotifications || editingQuantity()) return;
     loading = true;
     try {
-        acceptPortal((await request('customer_read', { includePetPhotos: activePage === 'pets' || activePage === 'booking' })).portal);
+        const result = await request('customer_read', { includePetPhotos: activePage === 'pets' || activePage === 'booking' });
+        if (editingQuantity()) return;
+        acceptPortal(result.portal);
         renderPortal();
     } catch (error) {
         notice(error.message, true);
@@ -431,7 +480,7 @@ for (const button of portal.querySelectorAll('[data-portal-page]')) {
     });
 }
 for (const id of ['#portal-refresh', '#refresh-activity']) getPortal(id).addEventListener('click', refreshPortal);
-getPortal('#portal-search').addEventListener('input', renderShop);
+getPortal('#portal-search').addEventListener('input', renderShopCatalog);
 getPortal('#month-back').addEventListener('click', () => { month = monthOffset(-1); renderCalendar(); });
 getPortal('#month-next').addEventListener('click', () => { month = monthOffset(1); renderCalendar(); });
 bookingForm.elements.pet.addEventListener('change', () => {

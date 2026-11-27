@@ -207,7 +207,7 @@ function handleAdminRequest(): void
             authResponse(500, 'The customer portal is temporarily unavailable.');
         }
     }
-    if (in_array($action, ['shop_read', 'shop_status', 'shop_submit', 'shop_save', 'shop_decide', 'sale_receipt_download', 'audit_read'], true)) {
+    if (in_array($action, ['shop_read', 'shop_status', 'staff_record_save', 'shop_save', 'sale_complete', 'sale_receipt_download', 'audit_read'], true)) {
         try {
             handleShopRequest($action);
         } catch (RuntimeException | JsonException | ValueError $error) {

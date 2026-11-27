@@ -22,7 +22,7 @@ if (empty($signedIn)) {
             <div id="catalog-products" class="catalog-products"></div>
             <footer class="retail-footer"><span id="pos-count"></span><div class="retail-pages" id="pos-pages"></div></footer>
         </div>
-        <!-- Staff edit quantities, apply a discount, request checkout or hold the cart for three hours here. -->
+        <!-- Staff edit quantities, apply a discount, check out or hold the cart for three hours here. -->
         <aside class="sale-card">
             <header><strong id="sale-title">🛒 Current Sale (0)</strong><button class="link" id="clear-cart">Clear Cart</button></header>
             <div id="cart-lines"></div>
@@ -82,7 +82,7 @@ if (empty($signedIn)) {
     <button type="button" class="close" aria-label="Close">×</button>
     <h2 id="sale-receipt-title">Sales Receipt</h2>
     <pre id="sale-receipt-details"></pre>
-    <button type="button" class="primary" id="print-sale-receipt" autofocus>Print Receipt</button>
+    <button type="button" class="primary" id="print-sale-receipt" autofocus>Download PDF</button>
 </dialog>
 <dialog id="customer-import">
     <button type="button" class="close" aria-label="Close">×</button>

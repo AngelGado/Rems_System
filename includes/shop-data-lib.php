@@ -1,5 +1,5 @@
 <?php
-// Shared shop storage, revision checks, staff requests, POS receipt access and the audit log. The shop state holds inventory, operations records and customer activity.
+// Shared shop storage, revision checks, staff operations, POS receipt access and the audit log.
 declare(strict_types=1);
 
 const SHOP_FILE = __DIR__ . '/../shop-data.php';
@@ -59,23 +59,15 @@ function withShopFile(bool $write, callable $operation): array
     }
 }
 
-// Returns every staff request for administrators and only the signed-in staff member’s own requests for staff.
-function visibleShopRequests(array $data, bool $admin, string $username): array
-{
-    return array_values(array_filter($data['requests'], static fn(array $request): bool =>
-        $admin || $request['staff'] === $username));
-}
-
 // Builds the dashboard response and restricts reports, user management and receipt information by role.
-function shopResult(array $data, bool $admin, string $username): array
+function shopResult(array $data, bool $admin): array
 {
-    $requests = visibleShopRequests($data, $admin, $username);
     $shop = $data['shop'];
     if (!$admin && $shop !== null) {
         $shop['records']['Reports'] = [];
         $shop['records']['User Management'] = [];
     }
-    return ['revision' => $data['revision'], 'shop' => $shop, 'requests' => $requests,
+    return ['revision' => $data['revision'], 'shop' => $shop,
         'pendingBookings' => $admin ? 0 : pendingBookingCount($data),
         'transactionDetails' => $admin ? ($data['transactionDetails'] ?? []) : [],
         'saleReceiptIds' => $admin ? array_keys($data['saleReceipts'] ?? []) : [],
@@ -122,7 +114,8 @@ function validatePendingPickupProducts(array $data, array $products): void
     $removed = array_diff(array_column($data['shop']['products'] ?? [], 6), array_column($products, 6));
     if (!$removed) return;
     foreach ($data['customerOrders'] ?? [] as $order) {
-        if ($order['status'] === 'Awaiting pickup' && array_intersect($removed, array_column($order['items'], 'id'))) {
+        if (in_array($order['status'], ['Awaiting pickup', 'Pending acceptance', 'Accepted'], true) &&
+            array_intersect($removed, array_column($order['items'], 'id'))) {
             authResponse(409, 'Complete or cancel the pending pickup order before deleting this product.');
         }
     }
@@ -270,7 +263,7 @@ function auditLogResult(array $entries, array $filters, int $page): array
         'summary' => $summary, 'facets' => $facets, 'start' => $total ? $start + 1 : 0, 'end' => $end];
 }
 
-// Checks shop permissions and revisions before running dashboard reads, staff submissions, approvals or administrator saves.
+// Checks shop permissions and revisions before running dashboard reads and writes.
 function handleShopRequest(string $action): never
 {
     $account = currentAccount();
@@ -293,43 +286,25 @@ function handleShopRequest(string $action): never
         if (!$admin) authResponse(403, 'Only administrators can manage sales receipts.');
         downloadStoredSaleReceipt();
     }
-    if (($action === 'shop_submit' && $admin) || (in_array($action, ['shop_save', 'shop_decide'], true) && !$admin)) {
+    if (($action === 'staff_record_save' && $account['role'] !== 'staff') || ($action === 'shop_save' && !$admin)) {
         authResponse(403, 'This action is reserved for the other account role.');
     }
     refreshBookingDeadlines();
     $result = withShopData(!in_array($action, ['shop_read', 'shop_status'], true), static function (array &$data) use ($action, $admin, $account): array {
-        // Send revision and count information cheaply when the request poll does not need a full snapshot.
+        // Return revision and booking count without sending a full snapshot.
         if ($action === 'shop_status') {
-            $requests = visibleShopRequests($data, $admin, $account['username']);
-            $pending = array_values(array_filter($requests, static fn(array $request): bool => $request['status'] === 'Pending'));
             return [
                 'revision' => $data['revision'],
                 'pendingBookings' => $admin ? 0 : pendingBookingCount($data),
-                'key' => implode('|', array_map(static fn(array $request): string => $request['id'] . ':' . $request['status'], $requests)),
-                'pending' => count($pending),
-                'latest' => array_map(static fn(array $request): array => [
-                    'type' => $request['type'], 'label' => $request['label'] ?? '',
-                    'staff' => $request['staff'], 'created' => $request['created'],
-                ], array_slice(array_reverse($pending), 0, 3)),
             ];
         }
-        if ($action === 'shop_submit') {
-            if ($data['shop'] === null) authResponse(409, 'Ask the admin to open the dashboard first.');
-            $type = $_POST['type'] ?? '';
-            if (in_array($type, ['product_add', 'product_edit'], true)) {
-                authResponse(403, 'Only administrators can add or edit products.');
-            }
-            $types = ['pet_add', 'pet_edit', 'pet_remove', 'customer_add', 'customer_edit', 'customer_import', 'sale'];
-            if (!in_array($type, $types, true)) authResponse(422, 'This request type is unavailable.');
-            checkRequestMaintenance($data, $type);
-            $payload = shopInput('payload', 1_500_000);
-            $label = $_POST['label'] ?? '';
-            if (!is_string($label) || strlen($label) > 400) authResponse(422, 'Invalid request label.');
-            $data['requests'][] = [
-                'id' => bin2hex(random_bytes(10)), 'staff' => $account['username'], 'type' => $type,
-                'payload' => $payload, 'label' => $label, 'status' => 'Pending', 'created' => gmdate('c'), 'note' => '',
-            ];
-            recordShopAudit($data, $account, 'Approvals', 'Submitted ' . str_replace('_', ' ', $type) . ' request.');
+        if ($action === 'sale_complete') {
+            if (!$admin && $account['role'] !== 'staff') authResponse(403, 'Only staff and administrators can complete sales.');
+            $receipt = completeCashSale($data, $account, shopInput('sale', 1_500_000));
+            return shopResult($data, $admin) + ['cashSale' => $receipt];
+        }
+        if ($action === 'staff_record_save') {
+            saveStaffRecord($data, $account, shopInput('payload', 1_500_000), $_POST['type'] ?? '');
         } elseif ($action === 'shop_save') {
             // Only proposed snapshots based on the current revision may replace the shared records.
             if ((string) $data['revision'] !== ($_POST['revision'] ?? null)) {
@@ -341,7 +316,7 @@ function handleShopRequest(string $action): never
                 if ($next['records']['Customers'] !== $previous['records']['Customers'] ||
                     $next['records']['Pets'] !== $previous['records']['Pets'] ||
                     $next['records']['Reports'] !== $previous['records']['Reports']) {
-                    authResponse(403, 'Review staff requests in Approvals to update operational records.');
+                    authResponse(403, 'Operational records are managed by staff.');
                 }
             }
             checkShopMaintenance($data, $next);
@@ -349,38 +324,184 @@ function handleShopRequest(string $action): never
             auditShopSave($data, $account, $next);
             $data['shop'] = $next;
             $data['revision']++;
-        } elseif ($action === 'shop_decide') {
-            // Finalize a pending proposal. Approval and its changes are handled under the same state lock.
-            $decision = $_POST['decision'] ?? '';
-            $id = $_POST['id'] ?? '';
-            $note = $_POST['note'] ?? '';
-            if (!in_array($decision, ['Approved', 'Rejected'], true) || !is_string($note) || strlen($note) > 500) {
-                authResponse(422, 'Enter a valid decision and note.');
-            }
-            $index = array_search($id, array_column($data['requests'], 'id'), true);
-            if ($index === false || $data['requests'][$index]['status'] !== 'Pending') {
-                authResponse(409, 'This request is no longer pending. Refresh the request list.');
-            }
-            if ($decision === 'Approved') {
-                checkRequestMaintenance($data, $data['requests'][$index]['type']);
-                if ((string) $data['revision'] !== ($_POST['revision'] ?? null)) {
-                    authResponse(409, 'Shop records changed. Refresh the request list before approving.');
-                }
-                $next = shopSnapshot($data);
-                checkShopMaintenance($data, $next);
-                checkAppointmentChanges($data['shop']['records'][APPOINTMENTS] ?? [], $next['records'][APPOINTMENTS]);
-                auditShopSave($data, $account, $next);
-                $data['shop'] = $next;
-                $data['revision']++;
-            }
-            $data['requests'][$index]['status'] = $decision;
-            recordShopAudit($data, $account, 'Approvals', $decision . ' ' . str_replace('_', ' ', $data['requests'][$index]['type']) . ' request.');
-            $data['requests'][$index]['note'] = trim($note);
-            unset($data['requests'][$index]['payload']);
         }
-        return shopResult($data, $admin, $account['username']);
+        return shopResult($data, $admin);
     });
     authResponse(200, '', $result);
+}
+
+// Applies only staff-managed record changes, using the live shop state under the write lock.
+function saveStaffRecord(array &$data, array $account, array $payload, mixed $type): void
+{
+    $sections = ['pet_add' => 'Pets', 'pet_edit' => 'Pets', 'pet_remove' => 'Pets',
+        'customer_add' => 'Customers', 'customer_edit' => 'Customers', 'customer_import' => 'Customers'];
+    if (!is_string($type) || !isset($sections[$type])) authResponse(422, 'Choose a valid staff operation.');
+    requireModuleOnline($data, 'system');
+    if ($data['shop'] === null) authResponse(409, 'Ask the admin to open the dashboard first.');
+    $next = $data['shop'];
+    $records = &$next['records'];
+    $section = $sections[$type];
+    $rows = &$records[$section];
+    $index = null;
+    if (in_array($type, ['pet_edit', 'pet_remove', 'customer_edit'], true)) {
+        $before = $payload['before'] ?? null;
+        $index = is_array($before) ? array_search($before[0] ?? null, array_column($rows, 0), true) : false;
+        if ($index === false || json_encode($rows[$index]) !== json_encode($before)) {
+            authResponse(409, 'This record changed. Refresh the page and try again.');
+        }
+    }
+    $original = $index === null ? [] : $rows[$index];
+    $entry = $payload['entry'] ?? null;
+    if ($type === 'pet_remove') {
+        if (in_array($original[0], array_column($records[APPOINTMENTS], 0), true)) {
+            authResponse(409, 'This pet is linked to an appointment.');
+        }
+        array_splice($rows, $index, 1);
+    } elseif ($section === 'Pets') {
+        $pet = validateStaffPet($entry, $records['Customers']);
+        ensureStaffRecordUnique($rows, $pet[0], '', $index);
+        if ($index === null) {
+            array_unshift($rows, $pet);
+        } else {
+            $rows[$index] = [...$pet, ...array_slice($original, 6)];
+            foreach ($records[APPOINTMENTS] as &$appointment) {
+                if ($appointment[0] === $original[0]) $appointment[0] = $pet[0];
+            }
+            unset($appointment);
+        }
+    } else {
+        $entries = $type === 'customer_import' ? ($payload['entries'] ?? null) : [$entry];
+        if (!is_array($entries) || !array_is_list($entries) || !$entries) authResponse(422, 'Enter valid customer records.');
+        foreach ($entries as $customer) {
+            [$name, $phone, $email, $status] = validateStaffCustomer($customer);
+            ensureStaffRecordUnique($rows, $name, $email, $index);
+            if ($index === null) {
+                array_unshift($rows, [$name, $phone, $email, '', $status, 0, '', manilaNow()->format('Y-m-d'),
+                    'CUST-' . strtoupper(bin2hex(random_bytes(4)))]);
+            } else {
+                $rows[$index] = [$name, $phone, $email, $original[3] ?? '', $status, ...array_slice($original, 5)];
+                foreach ($records['Pets'] as &$pet) {
+                    if ($pet[1] === $original[0]) $pet[1] = $name;
+                }
+                unset($pet);
+            }
+        }
+    }
+    checkShopMaintenance($data, $next);
+    checkAppointmentChanges($data['shop']['records'][APPOINTMENTS], $next['records'][APPOINTMENTS]);
+    auditShopSave($data, $account, $next);
+    $data['shop'] = $next;
+    $data['revision']++;
+}
+
+function validStaffText(mixed $value, bool $required = false): bool
+{
+    return is_string($value) && strlen($value) <= 2000 && (!$required || trim($value) !== '');
+}
+
+function validateStaffPet(mixed $entry, array $customers): array
+{
+    if (!is_array($entry) || !validStaffText($entry[0] ?? null, true) ||
+        !in_array($entry[1] ?? null, array_column($customers, 0), true) ||
+        !validStaffText($entry[2] ?? null, true) || !validStaffText($entry[3] ?? null) ||
+        !validStaffText($entry[4] ?? null) || !is_string($entry[5] ?? null) ||
+        ($entry[5] !== '' && !preg_match('~\A(?:assets/catalog-[1-6]\.jpg|data:image/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+=*)\z~', $entry[5]))) {
+        authResponse(422, 'Check the pet details, owner and picture.');
+    }
+    return [trim($entry[0]), $entry[1], trim($entry[2]), $entry[3], $entry[4], $entry[5]];
+}
+
+function validateStaffCustomer(mixed $entry): array
+{
+    if (!is_array($entry) || !validStaffText($entry[0] ?? null, true) || !validStaffText($entry[1] ?? null) ||
+        !validStaffText($entry[2] ?? null) || !in_array($entry[4] ?? null, ['Active', 'Inactive'], true)) {
+        authResponse(422, 'Check the customer name, contact details and status.');
+    }
+    $phone = $entry[1];
+    $email = $entry[2];
+    if (($phone !== '' && (!preg_match('/\A[+0-9 ().-]+\z/', $phone) ||
+            !preg_match('/\A\d{7,15}\z/', preg_replace('/\D/', '', $phone)))) ||
+        ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL))) {
+        authResponse(422, 'Enter a valid phone number and email address.');
+    }
+    return [trim($entry[0]), $phone, $email, $entry[4]];
+}
+
+function ensureStaffRecordUnique(array $rows, string $name, string $email, ?int $index): void
+{
+    foreach ($rows as $i => $row) {
+        if ($i === $index) continue;
+        if (strcasecmp($row[0], $name) === 0 || ($email !== '' && strcasecmp($row[2] ?? '', $email) === 0)) {
+            authResponse(409, 'That name or email is already in use.');
+        }
+    }
+}
+
+// Records a cash checkout under the shop lock and returns the same receipt if the request is retried.
+function completeCashSale(array &$data, array $account, array $sale): array
+{
+    $id = $sale['id'] ?? null;
+    $discountType = $sale['discountType'] ?? null;
+    $cash = $sale['cash'] ?? null;
+    $total = $sale['total'] ?? null;
+    $lines = $sale['lines'] ?? null;
+    if (!is_string($id) || !preg_match('/\A#TRX-[A-Z0-9]{10}\z/', $id) ||
+        !in_array($discountType, ['', 'senior', 'pwd'], true) ||
+        !is_int($cash) || $cash < 0 || !is_int($total) || $total < 0 ||
+        !is_array($lines) || !array_is_list($lines) || !$lines) {
+        authResponse(422, 'Check the cart, discount and cash amount.');
+    }
+    $fingerprint = hash('sha256', json_encode($sale, JSON_THROW_ON_ERROR));
+    $previous = $data['cashSales'][$id] ?? null;
+    $reports = $data['shop']['records']['Reports'] ?? [];
+    if ($previous !== null) {
+        if ($previous['staff'] !== $account['username'] || $previous['fingerprint'] !== $fingerprint) {
+            authResponse(409, 'This checkout reference is already in use.');
+        }
+        return $previous['receipt'];
+    }
+    if (in_array($id, array_column($reports, 0), true)) authResponse(409, 'This checkout reference is already in use.');
+    requireModuleOnline($data, 'pos');
+    if ($data['shop'] === null) authResponse(409, 'Ask the admin to open the dashboard first.');
+
+    $next = $data['shop'];
+    $productIndexes = array_column($next['products'], null, 6);
+    $items = [];
+    $descriptions = [];
+    $subtotal = 0;
+    foreach ($lines as $line) {
+        if (!is_array($line) || !array_is_list($line) || count($line) !== 2 ||
+            !is_string($line[0]) || !is_int($line[1]) || $line[1] < 1 || !isset($productIndexes[$line[0]])) {
+            authResponse(422, 'Check the products and quantities in the cart.');
+        }
+        [$productId, $quantity] = $line;
+        $product = $productIndexes[$productId];
+        unset($productIndexes[$productId]);
+        if ($product[3] < $quantity) authResponse(409, 'Stock changed. Review the cart and try again.');
+        $unit = $product[8]['unit'] ?? '';
+        $label = $product[0] . ($unit !== '' ? ' · ' . $unit : '');
+        $price = (int) round($product[2] * 100);
+        $subtotal += $price * $quantity;
+        $items[] = ['label' => $label, 'quantity' => $quantity, 'price' => $price];
+        $descriptions[] = $quantity . ' × ' . $label;
+        $remainingStock[$productId] = $product[3] - $quantity;
+    }
+    $discount = $discountType === '' ? 0 : (int) round($subtotal / 5);
+    if ($total !== $subtotal - $discount) authResponse(409, 'The total changed. Review the cart and try again.');
+    if ($cash < $total) authResponse(422, 'Cash received must cover the total.');
+
+    foreach ($next['products'] as &$product) {
+        $product[3] = $remainingStock[$product[6] ?? ''] ?? $product[3];
+    }
+    unset($product);
+    $date = manilaNow()->format('Y-m-d');
+    $receipt = compact('id', 'date', 'items', 'subtotal', 'discountType', 'discount', 'total', 'cash');
+    $next['records']['Reports'] = [[$id, 'Walk-in', $date, implode(', ', $descriptions), $total / 100], ...$reports];
+    auditShopSave($data, $account, $next);
+    $data['shop'] = $next;
+    $data['cashSales'][$id] = ['staff' => $account['username'], 'fingerprint' => $fingerprint, 'receipt' => $receipt];
+    $data['revision']++;
+    return $receipt;
 }
 
 // Validates the sale reference and returns an attached receipt only for a recorded transaction.

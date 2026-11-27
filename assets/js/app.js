@@ -55,11 +55,10 @@ function showSection(name) {
     if (admin.dataset.role === 'staff' && ['Reports', 'User Management', ...adminHistoryPages].includes(name)) return;
     const currentPage = admin.dataset.page;
     if (name === 'Settings' && currentPage && currentPage !== 'Settings') previousAdminPage = currentPage;
-    document.querySelector('#requests-page').hidden = name !== 'Requests';
     document.querySelector('#profile-settings').hidden = name !== 'Settings';
     document.querySelector('#dashboard').hidden = name !== 'Dashboard';
     document.querySelector('#inventory').hidden = name !== 'Inventory';
-    document.querySelector('#operations').hidden = ['Dashboard', 'Inventory', 'Point of Sale', 'Customers', 'Settings', 'Requests', 'Reservation', ...adminHistoryPages].includes(name);
+    document.querySelector('#operations').hidden = ['Dashboard', 'Inventory', 'Point of Sale', 'Customers', 'Settings', 'Reservation', ...adminHistoryPages].includes(name);
     const reservationPage = document.querySelector('#reservation-page');
     if (reservationPage) reservationPage.hidden = name !== 'Reservation';
     document.querySelectorAll('[data-admin-history]').forEach(section => { section.hidden = section.dataset.adminHistory !== name; });
