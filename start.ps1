@@ -1,3 +1,7 @@
+param(
+    [string]$ListenAddress = "127.0.0.1"
+)
+
 Set-Location $PSScriptRoot
 
 $credential = Import-Clixml "$env:LOCALAPPDATA\REMS\db-credentials.xml"
@@ -12,4 +16,4 @@ if ($LASTEXITCODE -ne 0) {
     throw "Database connection failed."
 }
 
-php -S 127.0.0.1:8081
+php -S "${ListenAddress}:8081" router.php
