@@ -1,29 +1,160 @@
-# REMS MySQL setup
+# REMS MySQL Database Setup
 
-1. Open phpMyAdmin or Laragon’s Adminer at `http://localhost/adminer/` while its web server is running. Sign in to MySQL and import [database.sql](database.sql) with an account that can create the schema and table.
-2. Use a MySQL account with `SELECT`, `INSERT`, and `UPDATE` on `rems_system.rems_state` for the PHP app.
-3. Set these environment variables in the process that serves PHP. For a local preview, run the following from the project directory in PowerShell. For Apache, make the same variables available to PHP through the server configuration and restart Apache.
+## Requirements
 
-   ```powershell
-   # The PHP process uses these settings to choose and authenticate its MySQL connection.
-   $env:REMS_DB_DSN = 'mysql:host=127.0.0.1;port=3306;dbname=rems_system;charset=utf8mb4'
-   $env:REMS_DB_USER = Read-Host 'MySQL username'
-   $env:REMS_DB_PASSWORD = [System.Net.NetworkCredential]::new('', (Read-Host 'MySQL password' -AsSecureString)).Password
-   php -S 127.0.0.1:8080
-   ```
+- Laragon
+- PHP with PDO MySQL extension
+- MySQL 8.0
+- HeidiSQL or phpMyAdmin
+- Windows PowerShell
 
-4. Open `http://127.0.0.1:8080/` for the PowerShell preview. On first access to each data group, the app copies the existing PHP-file records into the corresponding `admin`, `staff`, or `shop` row. The `shop` row also contains customer accounts, orders, and appointments. You can check these rows under `rems_system → rems_state` in your database manager.
+## 1. Database Installation
 
-When `REMS_DB_DSN` is unset, the app uses its original PHP files. Once MySQL is enabled, keep it enabled for all app instances so that all shared changes go to the same database. The original files remain as they were at import time. The retail interface keeps browser-local drafts and saved sales in that browser.
+1. Start MySQL using Laragon.
+2. Open HeidiSQL or phpMyAdmin.
+3. Import database/database.sql using a MySQL administrator account.
+4. Verify that rems_test_db contains 12 tables,
+   3 triggers, and 1 stored procedure.
 
-## Appointment deadlines
+The SQL file contains the database structure only.
+It does not contain private customer records or passwords.
 
-The app checks appointment deadlines during customer and shop requests. To persist no-show cancellations and expire unanswered requests while nobody is using the app, run `php database/process-booking-deadlines.php` once a minute from Windows Task Scheduler. Use the same database environment and PHP executable as the web app.
+Import this file into a fresh installation only.
+Do not import it again into an existing working database.
 
-## Reading the source
+## 2. Database Configuration
 
-- [index.php](../index.php) selects a page by the session’s role and sends authenticated POST requests to [the request router](../includes/admin-auth.php).
-- [views/](../views/) contains the server-rendered page templates. [assets/js/](../assets/js/) handles browser interactions. [assets/css/](../assets/css/) provides the base theme and feature layouts.
-- [shop-data-lib.php](../includes/shop-data-lib.php) manages the shared shop state, staff proposals and revisions. [customer-lib.php](../includes/customer-lib.php) handles customer activity, while [booking-workflow.php](../includes/booking-workflow.php) processes appointment decisions and deadlines.
-- [database.php](../includes/database.php) imports local state into MySQL on first use and handles transactions. The live data and credentials are specific to each installation.
-- [The bundled jsPDF library](../assets/vendor/jspdf-4.2.1.umd.min.js) is third-party code. The application’s PDF integration is documented in [receipt-pdf.js](../assets/js/receipt-pdf.js).
+Database Name: rems_test_db
+Database Host: 127.0.0.1
+Database Port: 3306
+Character Set: utf8mb4
+
+Use a dedicated MySQL application account with
+SELECT, INSERT, UPDATE, and DELETE permissions
+on the REMS database.
+
+The MySQL administrator must configure this account
+before starting the application.
+
+## 3. Database Credentials
+
+Save the database credentials locally using PowerShell.
+
+```powershell
+New-Item -ItemType Directory -Path "$env:LOCALAPPDATA\REMS" -Force
+```
+
+```powershell
+Get-Credential -UserName "rems_user" -Message "Enter MySQL password" | Export-Clixml "$env:LOCALAPPDATA\REMS\db-credentials.xml"
+```
+
+This configuration is required once per Windows
+user and computer.
+
+Do not upload database credentials or private
+database backups to GitHub.
+
+## 4. Running the System
+
+Start MySQL in Laragon.
+
+Open the project directory in PowerShell and run:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\start.ps1
+```
+
+Open the following address in a web browser:
+
+http://127.0.0.1:8081/
+
+The startup script loads the saved credentials,
+configures the database connection, verifies
+connectivity, and starts the PHP development server.
+
+## 5. Database Tables
+
+| Table | Description |
+|---|---|
+| admin_accounts | Administrator account references |
+| staff_accounts | Staff account references |
+| customer_accounts | Customer account information |
+| customers | Customer records |
+| pets | Registered pet information |
+| bookings | Grooming and pet hotel appointments |
+| products | Product information and prices |
+| inventory | Stock quantities and expiration dates |
+| sales | Sales transaction records |
+| pickup_orders | Customer product reservations |
+| pickup_items | Reserved product details |
+| rems_state | Primary application state storage |
+
+## 6. Database Architecture
+
+The system uses a hybrid MySQL database architecture.
+
+The PHP backend stores application state in the
+rems_state table. MySQL triggers automatically
+synchronize this data into structured relational tables.
+
+The relational tables support SQL queries,
+reporting, and database inspection.
+
+The database uses primary keys, foreign keys,
+indexes, and transactions to support data integrity.
+
+## 7. Stored Procedure
+
+rems_sync_tables
+
+This stored procedure converts application JSON
+data into structured database records using
+MySQL JSON_TABLE().
+
+## 8. Database Triggers
+
+- rems_sync_after_insert
+- rems_sync_after_update
+- rems_sync_after_delete
+
+These triggers execute the synchronization
+procedure after changes to the rems_state table.
+
+Synchronization is one-way, from rems_state
+to the relational tables.
+
+## 9. Important Files
+
+- index.php - Application entry point
+- includes/database.php - MySQL connection and transactions
+- includes/admin-auth.php - Authentication and request handling
+- includes/staff-auth.php - Staff authentication
+- includes/customer-lib.php - Customer functionality
+- includes/shop-data-lib.php - Shared shop operations
+- includes/booking-workflow.php - Appointment processing
+- database/database.sql - Database structure
+- start.ps1 - Automated system startup
+- views/ - Website page templates
+- assets/ - CSS, JavaScript, and images
+
+## 10. Database Backup
+
+Regularly export the database using HeidiSQL.
+
+Include the database structure, records,
+stored procedure, and triggers.
+
+Keep backups outside the public website directory
+and GitHub repository.
+
+## 11. Shared Access
+
+For multiple computers to share the same records,
+they must access the same application server or
+centralized database.
+
+Cloning the GitHub repository does not automatically
+provide access to an existing database.
+
+The default startup configuration is intended for
+local development and system demonstration.
