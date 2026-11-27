@@ -1,4 +1,4 @@
-﻿/* Staff POS, local cart drafts and holds, receipts and customer record screens. Shared sales are recorded through the approval workflow. */
+﻿/* Staff POS, local cart drafts and holds, receipts and customer record screens. */
 
 const retail = selector => document.querySelector(selector);
 // Creates a DOM element for retail and admin views with optional text and CSS class.
@@ -63,6 +63,11 @@ const paymentForm = retail('#payment-form');
 const completeSaleButton = paymentForm.querySelector('button[type="submit"]');
 const saleReceiptDialog = retail('#sale-receipt-dialog');
 let paymentSaving = false;
+let paymentAttempt;
+const closePaymentButton = payment.querySelector('.close');
+payment.addEventListener('cancel', event => {
+    if (paymentSaving) event.preventDefault();
+});
 // Scope local POS drafts and holds by signed-in username on this browser.
 const saleStorageKey = 'rems-pos-drafts:' + admin.dataset.username.toLowerCase();
 let localSales = {};
@@ -468,8 +473,8 @@ async function downloadSaleReceipt(id, button) {
         button.disabled = false;
     }
 }
-// Validate the current cart and send staff checkout requests to Approvals.
-retail('#checkout').addEventListener('click', async () => {
+// Validate the current cart before opening the cash payment dialog.
+retail('#checkout').addEventListener('click', () => {
     if (paymentSaving) return;
     const sale = currentSale();
     const error = saleValidation(sale);
@@ -478,24 +483,6 @@ retail('#checkout').addEventListener('click', async () => {
         return;
     }
     const { total } = sale;
-    if (isStaff) {
-        const button = retail('#checkout');
-        button.disabled = true;
-        try {
-            await sendShopRequest('sale', {
-                lines: sale.lines.map(({ product, quantity }) => [product[6], quantity, productLabel(product), product[2]]),
-                discountType: sale.discountType, discount: sale.discount / 100,
-                total: total / 100, customer: 'Walk-in'
-            });
-            updateSaleState({ lines: [], discountType: '' });
-            showSection('Requests');
-        } catch (error) {
-            saleMessage.textContent = error.message;
-        } finally {
-            button.disabled = !cart.size;
-        }
-        return;
-    }
     paymentForm.reset();
     completeSaleButton.disabled = false;
     paymentForm.elements.cash.readOnly = false;
@@ -512,7 +499,6 @@ paymentForm.elements.cash.addEventListener('input', () => {
 // Validate cash and stock again before building the sale and receipt details.
 paymentForm.addEventListener('submit', async event => {
     event.preventDefault();
-    if (isStaff) return;
     if (completeSaleButton.disabled) return;
     const sale = currentSale();
     const { lines, total } = sale;
@@ -523,35 +509,20 @@ paymentForm.addEventListener('submit', async event => {
         retail('#payment-error').textContent = error || 'Enter a valid cash amount that covers the total.';
         return;
     }
-    const date = localDate();
-    const transaction = ['#TRX-' + newRetailId().replaceAll('-', '').slice(0, 10).toUpperCase(), 'Walk-in', date,
-        lines.map(({ product, quantity }) => quantity + ' × ' + productLabel(product)).join(', '), total / 100];
-    const receiptDetails = [
-        'Rem’s Pet Supplies & Accessories Shop',
-        transaction[0] + ' · ' + formatDay(date),
-        'Customer Walk-in',
-        '',
-        ...lines.map(({ product, quantity }) => quantity + ' × ' + productLabel(product) + ' @ ' + pesos(product[2])
-            + ' = ' + pesos(cents(product[2]) * quantity / 100)),
-        '',
-        'Subtotal ' + pesos(sale.subtotal / 100),
-        saleDiscountLabels[sale.discountType] + ' ' + pesos(sale.discount / 100),
-        'Total paid ' + pesos(total / 100),
-        'Cash received ' + pesos(received / 100),
-        'Change ' + pesos((received - total) / 100),
-    ].join('\n');
-    const nextProducts = products.map(product => {
-        if (!cart.has(product[6])) return product;
-        const updated = [...product];
-        updated[3] -= cart.get(product[6]);
-        return updated;
-    });
+    const payload = { lines: lines.map(({ product, quantity }) => [product[6], quantity]),
+        discountType: sale.discountType, total, cash: received };
+    const signature = JSON.stringify(payload);
+    if (paymentAttempt?.signature !== signature) {
+        paymentAttempt = { signature, id: '#TRX-' + newRetailId().replaceAll('-', '').slice(0, 10).toUpperCase() };
+    }
     retail('#payment-error').textContent = '';
     paymentSaving = true;
     completeSaleButton.disabled = true;
+    closePaymentButton.disabled = true;
     paymentForm.elements.cash.readOnly = true;
+    let result;
     try {
-        await storeShop(nextProducts, { ...records, Reports: [transaction, ...records.Reports] });
+        result = await shopRequest('sale_complete', { sale: JSON.stringify({ ...payload, id: paymentAttempt.id }) });
     } catch (error) {
         retail('#payment-error').textContent = error.message;
         completeSaleButton.disabled = false;
@@ -559,14 +530,33 @@ paymentForm.addEventListener('submit', async event => {
         return;
     } finally {
         paymentSaving = false;
+        closePaymentButton.disabled = false;
     }
+    paymentAttempt = null;
     try { storeLocalSales({ lines: [], discountType: '' }); } catch { /* The sale is already recorded. */ }
     cart.clear();
     discountInput.value = '';
+    acceptShop(result);
     refreshSale();
     refreshDashboard();
-    saleMessage.textContent = 'Sale completed. Change ' + pesos((received - total) / 100) + '.';
-    openSaleReceipt(transaction[0], receiptDetails);
+    const receipt = result.cashSale;
+    const change = pesos((receipt.cash - receipt.total) / 100);
+    const receiptDetails = [
+        'Rem’s Pet Supplies & Accessories Shop',
+        receipt.id + ' · ' + formatDay(receipt.date),
+        'Customer Walk-in',
+        '',
+        ...receipt.items.map(({ label, quantity, price }) => quantity + ' × ' + label + ' @ ' + pesos(price / 100)
+            + ' = ' + pesos(price * quantity / 100)),
+        '',
+        'Subtotal ' + pesos(receipt.subtotal / 100),
+        saleDiscountLabels[receipt.discountType] + ' ' + pesos(receipt.discount / 100),
+        'Total paid ' + pesos(receipt.total / 100),
+        'Cash received ' + pesos(receipt.cash / 100),
+        'Change ' + change,
+    ].join('\n');
+    saleMessage.textContent = 'Sale completed. Change ' + change + '.';
+    openSaleReceipt(receipt.id, receiptDetails);
 });
 
 const customerDialog = retail('#customer-dialog');
@@ -627,7 +617,7 @@ function renderCustomers() {
         const actions = row.insertCell();
         actions.className = 'customer-actions';
         actions.append(retailButton('◎ View', () => openCustomer('view', index), 'plain'));
-        if (isStaff) actions.append(retailButton('Request edit', () => openCustomer('edit', index), 'plain'));
+        if (isStaff) actions.append(retailButton('Edit', () => openCustomer('edit', index), 'plain'));
     }
     if (!matching.length) appendCell(rows.insertRow(), 'No customers match your search.').colSpan = 6;
     retail('#customer-count').textContent = matching.length ? 'Showing ' + (start + 1) + '–' + Math.min(start + 5, matching.length) + ' of ' + matching.length + ' customers' : 'Showing 0 customers';
@@ -665,7 +655,7 @@ function openCustomer(mode, index = -1) {
         if (entry?.[position]) field.value = entry[position];
     });
     customerSave.hidden = readOnly;
-    customerSave.textContent = isStaff ? 'Send for Approval' : 'Save Customer';
+    customerSave.textContent = 'Save Customer';
     customerDialog.showModal();
 }
 retail('#add-customer').addEventListener('click', () => openCustomer('add'));
@@ -703,13 +693,8 @@ customerForm.addEventListener('submit', async event => {
     else customers[customerEditIndex] = entry;
     const pets = records.Pets.map(pet => existing && pet[1] === existing[0] ? [pet[0], name, ...pet.slice(2)] : pet);
     try {
-        if (isStaff) {
-            await sendShopRequest(existing ? 'customer_edit' : 'customer_add', { before: existing, entry });
-            customerDialog.close();
-            showSection('Requests');
-            return;
-        }
-        await storeShop(products, { ...records, Customers: customers, Pets: pets });
+        if (isStaff) await saveStaffRecord(existing ? 'customer_edit' : 'customer_add', { before: existing, entry });
+        else await storeShop(products, { ...records, Customers: customers, Pets: pets });
     } catch (failure) {
         error.textContent = failure.message;
         return;
@@ -786,13 +771,7 @@ importForm.addEventListener('submit', async event => {
                 0, '', localDate(), 'CUST-' + newRetailId().slice(0, 8).toUpperCase()]);
         }
         if (!imported.length) throw new Error('The CSV contains no new customers with valid details.');
-        if (isStaff) {
-            await sendShopRequest('customer_import', { entries: imported });
-            importDialog.close();
-            showSection('Requests');
-            return;
-        }
-        await storeRecords('Customers', [...imported, ...records.Customers]);
+        await saveStaffRecord('customer_import', { entries: imported });
         importDialog.close();
         customerSearch.value = '';
 
@@ -808,7 +787,6 @@ importForm.addEventListener('submit', async event => {
 
 document.addEventListener('rems:section', event => {
     if (event.detail === 'Point of Sale') {
-        if (isStaff) retail('#checkout').textContent = 'Request Checkout';
         renderCategories();
         refreshSale();
     } else if (event.detail === 'Customers') renderCustomers();

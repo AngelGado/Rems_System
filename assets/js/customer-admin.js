@@ -18,7 +18,7 @@ function renderCustomerAccounts(accounts) {
     if (!accounts.length) accountList.append(retailNode('p', 'retail-empty', 'No customer accounts yet.'));
 }
 
-// Renders pickup orders and shows completion and cancellation controls for orders awaiting pickup.
+// Shows the next available action for each active reservation.
 function renderReservations(orders) {
     const orderList = retail('#customer-order-list');
     orderList.replaceChildren();
@@ -28,10 +28,13 @@ function renderReservations(orders) {
         orderInfo.append(retailNode('strong', '', order.id + ' · ' + order.customer),
             retailNode('small', '', order.items.map(item => item.quantity + ' × ' + item.name).join(', ')));
         row.append(orderInfo, retailNode('strong', '', pesos(order.total)), retailNode('span', 'operation-badge', order.status));
-        if (order.status === 'Awaiting pickup') {
+        const pending = order.status === 'Pending acceptance';
+        if (pending || order.status === 'Accepted') {
             const actions = retailNode('div', 'customer-order-actions');
             actions.append(
-                retailButton('Mark Paid & Picked Up', () => updateCustomerOrder(order.id, 'Completed'), 'filter'),
+                pending
+                    ? retailButton('Accept Reservation', () => updateCustomerOrder(order.id, 'Accepted'), 'primary')
+                    : retailButton('Mark Paid & Picked Up', () => updateCustomerOrder(order.id, 'Completed'), 'filter'),
                 retailButton('Cancel Order', () => updateCustomerOrder(order.id, 'Cancelled'), 'filter')
             );
             row.append(actions);
@@ -61,8 +64,8 @@ async function refreshCustomerManagement() {
 // Confirms a pickup action, saves it through the server and refreshes the shared stock and sales state.
 async function updateCustomerOrder(id, status) {
     if (customerManagementBusy) return;
-    const message = status === 'Completed' ? 'Confirm that payment was received and this order was picked up.' : 'Cancel this order and return the reserved quantity to stock?';
-    if (!window.confirm(message)) return;
+    if (status === 'Completed' && !window.confirm('Confirm that payment was received and this order was picked up.')) return;
+    if (status === 'Cancelled' && !window.confirm('Cancel this order and return the reserved quantity to stock?')) return;
     customerManagementBusy = true;
     try {
         const result = await shopRequest('customer_order_status', { id, status });

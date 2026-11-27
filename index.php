@@ -46,7 +46,7 @@ $products = [
 ];
 $adminPages = ['Transaction History', 'Audit Logs', 'Reports', 'User Management'];
 $staffPages = ['Point of Sale', 'Booking', 'Reservation', 'Grooming & Pet Hotel'];
-$staffHiddenTabs = [...$adminPages, 'Inventory', 'Customers', 'Pets'];
+$staffHiddenTabs = [...$adminPages, 'Inventory'];
 $navigation = ['▦ Dashboard', '◎ Inventory', '🛒 Point of Sale', '♙ Customers', '♧ Pets', '⌂ Grooming & Pet Hotel',
     '▣ Booking', '▤ Reservation', '≡ Transaction History', '◷ Audit Logs', '▥ Reports', '♙ User Management'];
 // Returns the shared shop logo markup used by public and customer headers.
@@ -198,9 +198,6 @@ function salesPicker(string $id): void {
             if (!$isAdmin && in_array($name, $staffHiddenTabs, true)) continue; ?>
             <button data-section="<?= htmlspecialchars($name) ?>"><span aria-hidden="true"><?= $symbol ?></span><?= htmlspecialchars($name) ?><?php if ($name === 'Booking'): ?><span id="booking-nav-count" class="request-nav-count" hidden></span><?php endif; ?></button>
         <?php endforeach; ?>
-            <?php if ($isAdmin): ?>
-            <button type="button" data-section="Requests"><span aria-hidden="true">⇄</span>Approvals<span id="request-nav-count" class="request-nav-count" hidden></span></button>
-            <?php endif; ?>
         </nav>
         <form class="logout-form" method="post">
             <input type="hidden" name="csrf" value="<?= $authToken ?>">
@@ -233,15 +230,6 @@ function salesPicker(string $id): void {
             <h1><?= $isAdmin ? 'Dashboard' : 'Staff Dashboard' ?></h1>
             <p class="subtitle"><?= $isAdmin ? 'Welcome back! Here’s an overview for your shop today.' : 'Track stock, serve customers, and check upcoming appointments.' ?></p>
             <?php if ($isAdmin): ?>
-            <section class="dashboard-approvals" aria-labelledby="dashboard-approvals-title">
-                <div class="dashboard-approvals-heading">
-                    <div><h2 id="dashboard-approvals-title">Staff approvals</h2>
-                        <p id="dashboard-approval-count" role="status">Checking for pending requests…</p>
-                    </div>
-                    <button type="button" class="primary" data-section="Requests">Open Approvals</button>
-                </div>
-                <ul id="dashboard-approval-list" hidden></ul>
-            </section>
             <section class="dashboard-sales" aria-labelledby="dashboard-sales-title">
                 <h2 id="dashboard-sales-title">Sales overview</h2>
                 <div class="sales-summary">
@@ -265,8 +253,7 @@ function salesPicker(string $id): void {
             <?php else: ?>
             <div class="staff-welcome">
                 <strong>Staff workspace</strong>
-                <p>Look up shop records, prepare a sale, or send changes to your admin for approval.</p>
-                <button class="primary" type="button" data-section="Requests">My Requests</button>
+                <p>Manage sales, reservations, appointments, and shop records.</p>
             </div>
             <div class="staff-shortcuts">
                 <button class="primary" type="button" data-section="Point of Sale">Open Point of Sale</button>
@@ -413,15 +400,6 @@ function salesPicker(string $id): void {
                 <table><thead id="operations-head"></thead><tbody id="operations-rows"></tbody></table>
             </div>
             <footer class="retail-footer"><span id="operation-count"></span><div id="operation-pages" class="retail-pages"></div></footer>
-        </section>
-        <section id="requests-page" hidden aria-labelledby="requests-title">
-            <div class="operation-heading">
-                <div><h1 id="requests-title"><?= $isAdmin ? 'Staff Approvals' : 'My Requests' ?></h1>
-                    <p class="subtitle"><?= $isAdmin ? 'Review proposed changes before they update shop records.' : 'Track changes you sent to your admin.' ?></p></div>
-                <button type="button" class="filter" id="refresh-requests">Refresh</button>
-            </div>
-            <p id="request-message" class="retail-message" role="status"></p>
-            <div id="request-list" class="request-list"></div>
         </section>
         <section id="profile-settings" hidden aria-labelledby="settings-title">
             <div class="settings-heading">

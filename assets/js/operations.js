@@ -177,7 +177,7 @@ document.querySelector('#view-near-expiry')?.addEventListener('click', () => {
     document.querySelector('#near-expiry-dialog').showModal();
 });
 
-// Refreshes the overview metrics, approval context, inventory warnings and upcoming services from the current shop state.
+// Refreshes overview metrics, inventory warnings and upcoming services from the current shop state.
 function refreshDashboard() {
     const dashboard = document.querySelector('#dashboard');
     const low = products.filter(isLowStock).sort((a, b) => a[3] - b[3]);
@@ -439,7 +439,7 @@ function operationActions(index) {
     }
     actions.append(retailButton('View', () => openOperation('view', index), 'plain'));
     if (isStaff ? activeOperation === 'Pets' : activeOperation !== 'Pets') {
-        actions.append(retailButton(isStaff ? 'Request edit' : 'Edit', () => openOperation('edit', index), 'plain'));
+        actions.append(retailButton('Edit', () => openOperation('edit', index), 'plain'));
     }
     return actions;
 }
@@ -777,8 +777,8 @@ function openOperation(mode, index = -1) {
     if (activeOperation === 'Pets') fields.push(petPhotoField(entry?.[5] ?? '', view));
     retail('#operation-fields').replaceChildren(...fields);
     retail('#save-operation').hidden = view;
-    retail('#save-operation').textContent = isStaff ? 'Send for Approval' : 'Save';
-    retail('#remove-operation').textContent = isStaff ? 'Request removal' : 'Remove';
+    retail('#save-operation').textContent = 'Save';
+    retail('#remove-operation').textContent = 'Remove';
     retail('#remove-operation').hidden = mode !== 'edit';
     const attendance = retail('#appointment-attendance');
     attendance.hidden = !(view && isStaff && activeOperation === scheduleName && entry?.[7] &&
@@ -844,15 +844,7 @@ operationForm.addEventListener('submit', async event => {
         operationError.textContent = 'This pet already has an appointment at that date and time.';
         return;
     }
-    if (isStaff) {
-        if (activeOperation !== 'Pets') return;
-        try {
-            await sendShopRequest(existing ? 'pet_edit' : 'pet_add', { before: existing, entry: values });
-            operationDialog.close();
-            showSection('Requests');
-        } catch (error) { operationError.textContent = error.message; }
-        return;
-    }
+    if (isStaff && activeOperation !== 'Pets') return;
     if (activeOperation === scheduleName) values.push(...(existing?.slice(5) ?? []));
     const next = [...entries];
     if (editingRecord < 0) next.unshift(values);
@@ -862,7 +854,8 @@ operationForm.addEventListener('submit', async event => {
         nextRecords[scheduleName] = records[scheduleName].map(entry => entry[0] === existing[0] ? [values[0], ...entry.slice(1)] : entry);
     }
     try {
-        await storeShop(products, nextRecords);
+        if (isStaff) await saveStaffRecord(existing ? 'pet_edit' : 'pet_add', { before: existing, entry: values });
+        else await storeShop(products, nextRecords);
     } catch (error) {
         operationError.textContent = error.message;
         return;
@@ -883,20 +876,13 @@ document.querySelector('#remove-operation').addEventListener('click', async () =
         operationError.textContent = 'This pet has linked appointments. Remove those appointments before removing the pet.';
         return;
     }
-    if (isStaff) {
-        if (activeOperation !== 'Pets') return;
-        try {
-            await sendShopRequest('pet_remove', { before: entry });
-            operationDialog.close();
-            showSection('Requests');
-        } catch (error) { operationError.textContent = error.message; }
-        return;
-    }
+    if (isStaff && activeOperation !== 'Pets') return;
     if (!window.confirm('Remove ' + entry[0] + ' from ' + sections[activeOperation].title + '?')) return;
     try {
-        await storeRecords(activeOperation, entries.filter((_, index) => index !== editingRecord));
-    } catch {
-        operationError.textContent = 'The record could not be removed. Check browser storage.';
+        if (isStaff) await saveStaffRecord('pet_remove', { before: entry });
+        else await storeRecords(activeOperation, entries.filter((_, index) => index !== editingRecord));
+    } catch (error) {
+        operationError.textContent = error.message;
         return;
     }
     operationDialog.close();
@@ -1028,7 +1014,6 @@ document.addEventListener('rems:section', event => {
     operationAction.textContent = report ? 'Export CSV' : '+ ' + (activeOperation === scheduleName ? 'Schedule Appointment' : 'Add ' + config.noun);
     exportSalesPdfButton.hidden = !report;
     operationAction.hidden = isStaff ? activeOperation !== 'Pets' : activeOperation === 'Pets';
-    if (isStaff && activeOperation === 'Pets') operationAction.textContent = 'Request New Pet';
     operationAction.disabled = false;
     operationSearch.placeholder = config.search;
     operationSearch.setAttribute('aria-label', config.search);
